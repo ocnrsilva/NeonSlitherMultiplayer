@@ -1,0 +1,107 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: neon_slither_app
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-neon_user}:${POSTGRES_PASSWORD:-neon_secret_pass}@postgres:5432/${POSTGRES_DB:-neon_slither}?schema=public
+      - REDIS_URL=redis://redis:6379
+      - GAME_SERVER_NAME=neon-slither-prod-01
+    ports:
+      - "${HOST_PORT:-3010}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - neon_slither_net
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1024M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: neon_slither_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-neon_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-neon_secret_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-neon_slither}
+    expose:
+      - "5432"
+    volumes:
+      - neon_slither_pgdata:/var/lib/postgresql/data
+    networks:
+      - neon_slither_net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-neon_user} -d ${POSTGRES_DB:-neon_slither}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: neon_slither_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    expose:
+      - "6379"
+    volumes:
+      - neon_slither_redisdata:/data
+    networks:
+      - neon_slither_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.05'
+          memory: 64M
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+networks:
+  neon_slither_net:
+    name: neon_slither_net
+    driver: bridge
+
+volumes:
+  neon_slither_pgdata:
+    name: neon_slither_pgdata
+  neon_slither_redisdata:
+    name: neon_slither_redisdata

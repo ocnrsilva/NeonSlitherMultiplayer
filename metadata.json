@@ -1,0 +1,9 @@
+{
+  "name": "Neon Slither Multiplayer",
+  "version": "1.6",
+  "description": "High-performance slither game with Tactical AI, Item Stacking, and Interactive Item Details UI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
