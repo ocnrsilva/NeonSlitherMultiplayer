@@ -68,6 +68,7 @@ interface LeaderboardEntry {
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(GameState.START);
   const [isPaused, setIsPaused] = useState(false);
+  const [mobileBoost, setMobileBoost] = useState(false);
   const [targetScore, setTargetScore] = useState(0);
   const [displayScore, setDisplayScore] = useState(0);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
@@ -317,47 +318,81 @@ const App: React.FC = () => {
 
       {gameState === GameState.PLAYING && (
         <>
-          <div className="absolute top-4 left-4 z-10 pointer-events-none flex flex-col gap-2">
-            <div className="bg-slate-900/80 backdrop-blur-lg border border-white/10 px-4 py-2 rounded-2xl shadow-2xl">
+          {/* Top-Left: Score e Powerups */}
+          <div className="absolute top-3 left-3 md:top-4 md:left-4 z-10 pointer-events-none flex flex-col gap-1.5 md:gap-2">
+            <div className="bg-slate-900/80 backdrop-blur-lg border border-white/10 px-3 py-1.5 md:px-4 md:py-2 rounded-2xl shadow-2xl">
               <span className="block text-[8px] md:text-[10px] uppercase tracking-widest font-black text-slate-500">Score</span>
-              <div className="text-2xl md:text-4xl font-black tabular-nums tracking-tighter text-blue-400 drop-shadow-[0_0_8px_rgba(59,130,246,0.5)]">
+              <div className="text-xl md:text-4xl font-black tabular-nums tracking-tighter text-blue-400 drop-shadow-[0_0_8px_rgba(59,130,246,0.5)]">
                 {displayScore}
               </div>
             </div>
 
             {/* Timers de Powerups Ativos */}
-            <div className="flex flex-col gap-1.5 w-max">
+            <div className="flex flex-col gap-1 w-max">
               {activePowerups.map((pw) => (
-                <div key={pw.type} className="bg-slate-900/80 backdrop-blur-md border border-white/10 pr-6 pl-1.5 py-1 rounded-full shadow-xl flex items-center gap-2.5 animate-in slide-in-from-left duration-300">
-                  <div className={`w-9 h-9 rounded-full flex items-center justify-center text-lg bg-slate-800 shadow-[0_0_15px_rgba(255,255,255,0.15)] ring-1 ring-white/20`}>
+                <div key={pw.type} className="bg-slate-900/80 backdrop-blur-md border border-white/10 pr-3 md:pr-6 pl-1 md:pl-1.5 py-0.5 md:py-1 rounded-full shadow-xl flex items-center gap-1.5 md:gap-2.5 animate-in slide-in-from-left duration-300">
+                  <div className="w-7 h-7 md:w-9 md:h-9 rounded-full flex items-center justify-center text-sm md:text-lg bg-slate-800 shadow-[0_0_15px_rgba(255,255,255,0.15)] ring-1 ring-white/20">
                     {pw.icon}
                   </div>
                   <div className="flex flex-col">
-                    <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 leading-none mb-0.5">{pw.label}</span>
-                    <span className="text-[14px] font-black tabular-nums text-white leading-none">{pw.timeLeft}s</span>
+                    <span className="text-[8px] md:text-[9px] font-black uppercase tracking-widest text-slate-400 leading-none mb-0.5">{pw.label}</span>
+                    <span className="text-[12px] md:text-[14px] font-black tabular-nums text-white leading-none">{pw.timeLeft}s</span>
                   </div>
                 </div>
               ))}
             </div>
           </div>
 
-          <div className="absolute top-4 right-4 z-10 w-36 md:w-52 pointer-events-none">
-            <div className="bg-slate-900/80 backdrop-blur-lg border border-white/10 rounded-2xl overflow-hidden shadow-2xl">
-              <div className="bg-white/5 px-3 py-1.5 border-b border-white/10 text-[8px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 text-center">
+          {/* Top-Right: Leaderboard e Botão de Pausa */}
+          <div className="absolute top-3 right-3 md:top-4 md:right-4 z-10 flex flex-col items-end gap-1.5 pointer-events-none">
+            {/* Botão de Pausa Touch & Click */}
+            <button
+              onClick={() => setIsPaused(prev => !prev)}
+              className="pointer-events-auto bg-slate-900/85 hover:bg-slate-800 active:scale-95 border border-white/15 rounded-xl px-2.5 py-1.5 flex items-center gap-1.5 shadow-xl backdrop-blur-md text-[10px] md:text-xs font-bold text-slate-200 transition-all cursor-pointer"
+              title="Pausar jogo"
+            >
+              <span>⏸️</span>
+              <span className="hidden sm:inline">Pausar</span>
+            </button>
+
+            {/* Top 5 Leaderboard Card */}
+            <div className="w-28 sm:w-36 md:w-52 bg-slate-900/80 backdrop-blur-lg border border-white/10 rounded-2xl overflow-hidden shadow-2xl">
+              <div className="bg-white/5 px-2 py-1 md:px-3 md:py-1.5 border-b border-white/10 text-[8px] md:text-[10px] font-black uppercase tracking-widest text-slate-400 text-center">
                 Top 5 Global
               </div>
-              <div className="p-2 flex flex-col gap-1">
+              <div className="p-1.5 md:p-2 flex flex-col gap-0.5 md:gap-1">
                 {leaderboard.map((entry, i) => (
                   <div 
                     key={i} 
-                    className={`flex justify-between items-center px-2 py-1 rounded-lg text-[10px] md:text-[11px] transition-colors ${entry.isPlayer ? 'bg-blue-500 text-white font-bold' : 'text-slate-400'}`}
+                    className={`flex justify-between items-center px-1.5 py-0.5 md:px-2 md:py-1 rounded-lg text-[9px] md:text-[11px] transition-colors ${entry.isPlayer ? 'bg-blue-500 text-white font-bold' : 'text-slate-400'}`}
                   >
-                    <span className="truncate max-w-[60px] md:max-w-[100px]">{i+1}. {entry.name}</span>
+                    <span className="truncate max-w-[55px] sm:max-w-[75px] md:max-w-[100px]">{i+1}. {entry.name}</span>
                     <span className="tabular-nums font-mono opacity-80">{entry.score}</span>
                   </div>
                 ))}
               </div>
             </div>
+          </div>
+
+          {/* Botão Turbo Mobile / Tablet (canto inferior esquerdo, oposto ao minimapa) */}
+          <div className="md:hidden absolute bottom-5 left-5 z-20 select-none pointer-events-auto">
+            <button
+              type="button"
+              onTouchStart={(e) => { e.preventDefault(); setMobileBoost(true); }}
+              onTouchEnd={(e) => { e.preventDefault(); setMobileBoost(false); }}
+              onTouchCancel={() => setMobileBoost(false)}
+              onMouseDown={() => setMobileBoost(true)}
+              onMouseUp={() => setMobileBoost(false)}
+              className={`w-14 h-14 sm:w-16 sm:h-16 rounded-full flex flex-col items-center justify-center border-2 shadow-2xl transition-all active:scale-90 select-none touch-none cursor-pointer ${
+                mobileBoost 
+                  ? 'bg-amber-500 border-amber-300 shadow-[0_0_25px_rgba(245,158,11,0.8)] text-slate-950 scale-95 font-black' 
+                  : 'bg-slate-900/85 border-amber-500/60 text-amber-400 backdrop-blur-md shadow-lg'
+              }`}
+              title="Turbo"
+            >
+              <span className="text-xl leading-none">⚡</span>
+              <span className="text-[8px] font-black uppercase tracking-wider mt-0.5">Turbo</span>
+            </button>
           </div>
           
           <GameCanvas 
@@ -368,6 +403,7 @@ const App: React.FC = () => {
             playerName={playerName}
             isPaused={isPaused}
             enabledItems={enabledItems}
+            externalBoost={mobileBoost}
           />
 
           {isPaused && (

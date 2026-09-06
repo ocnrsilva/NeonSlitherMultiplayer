@@ -34,6 +34,7 @@ interface GameCanvasProps {
   playerName: string;
   isPaused: boolean;
   enabledItems: Record<SpecialItemType, boolean>;
+  externalBoost?: boolean;
 }
 
 interface InterpolatedSnake {
@@ -66,6 +67,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   playerName,
   isPaused,
   enabledItems,
+  externalBoost = false,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const socketRef = useRef<Socket | null>(null);
@@ -74,6 +76,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
   const isPausedRef = useRef(isPaused);
   isPausedRef.current = isPaused;
+
+  const externalBoostRef = useRef(externalBoost);
+  externalBoostRef.current = externalBoost;
 
   const callbacksRef = useRef({ onScoreUpdate, onLeaderboardUpdate, onPowerupsUpdate, onGameOver });
   callbacksRef.current = { onScoreUpdate, onLeaderboardUpdate, onPowerupsUpdate, onGameOver };
@@ -94,16 +99,62 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const lastInputSentTimeRef = useRef<number>(0);
   const keysPressedRef = useRef<{ [key: string]: boolean }>({});
 
+  const sendInput = useCallback((boostOverride?: boolean) => {
+    if (isPausedRef.current || !socketRef.current || !socketRef.current.connected) return;
+    const seq = ++inputSequenceRef.current;
+    const boostActive = boostOverride !== undefined ? boostOverride : (isBoostingRef.current || !!externalBoostRef.current);
+    socketRef.current.emit(SOCKET_EVENTS.PLAYER_INPUT, {
+      sequence: seq,
+      direction: targetAngleRef.current,
+      boost: boostActive,
+    });
+    lastInputSentTimeRef.current = performance.now();
+  }, []);
+
   const resize = useCallback(() => {
-    if (canvasRef.current) {
-      canvasRef.current.width = window.innerWidth || document.documentElement.clientWidth || 800;
-      canvasRef.current.height = window.innerHeight || document.documentElement.clientHeight || 600;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // Use container rect and viewport
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.floor(rect.width || window.innerWidth || document.documentElement.clientWidth || 360);
+    const height = Math.floor(rect.height || window.innerHeight || document.documentElement.clientHeight || 640);
+
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
     }
   }, []);
 
+  // Update input immediately when externalBoost prop changes
   useEffect(() => {
-    window.addEventListener('resize', resize);
+    if (externalBoost !== undefined) {
+      isBoostingRef.current = !!externalBoost;
+      sendInput(!!externalBoost);
+    }
+  }, [externalBoost, sendInput]);
+
+  useEffect(() => {
     resize();
+
+    // Attach ResizeObserver for responsive adaptation across all devices and orientation changes
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && canvasRef.current) {
+      ro = new ResizeObserver(() => {
+        resize();
+      });
+      ro.observe(canvasRef.current);
+      if (canvasRef.current.parentElement) {
+        ro.observe(canvasRef.current.parentElement);
+      }
+    }
+
+    const handleResizeEvent = () => resize();
+    window.addEventListener('resize', handleResizeEvent);
+    window.addEventListener('orientationchange', handleResizeEvent);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', handleResizeEvent);
+    }
 
     // Connect Socket.IO client
     const socket = io({
@@ -666,16 +717,45 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           ctx.fillText(tag, head.x, head.y - bodyWidth / 2 - 25);
         });
 
-        // --- Minimap HUD ---
+        // --- Responsive Minimap HUD (All platforms & mobile viewports) ---
         ctx.setTransform(1, 0, 0, 1, 0, 0);
-        const mmSize = Math.min(canvas.width * 0.22, 220);
-        const mmX = canvas.width - mmSize - 20;
-        const mmY = canvas.height - mmSize - 20;
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        const minDim = Math.min(canvas.width, canvas.height);
+        const isMobileScreen = minDim < 640 || canvas.width < 768;
+
+        // Responsive size: between 76px and 190px
+        const mmSize = Math.max(76, Math.min(minDim * 0.24, isMobileScreen ? 110 : 190));
+
+        // Margins respecting mobile screen edges, safe area insets and gesture bars
+        const marginX = isMobileScreen ? 12 : 20;
+        const isPortrait = canvas.height > canvas.width;
+        // On portrait mobile, give safe clearance from bottom browser UI / gesture bar
+        const marginY = isMobileScreen ? (isPortrait ? 28 : 12) : 20;
+
+        const mmX = Math.max(8, canvas.width - mmSize - marginX);
+        const mmY = Math.max(8, canvas.height - mmSize - marginY);
+
+        ctx.save();
+        // Minimap background with neon border
+        ctx.fillStyle = 'rgba(2, 6, 23, 0.85)';
         ctx.fillRect(mmX, mmY, mmSize, mmSize);
-        ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)';
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgba(59, 130, 246, 0.6)';
+        ctx.lineWidth = 1.5;
         ctx.strokeRect(mmX, mmY, mmSize, mmSize);
+
+        // Clip to minimap interior so no dots or effects bleed outside
+        ctx.beginPath();
+        ctx.rect(mmX, mmY, mmSize, mmSize);
+        ctx.clip();
+
+        // Subtle grid crosshair
+        ctx.strokeStyle = 'rgba(51, 65, 85, 0.35)';
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(mmX + mmSize / 2, mmY);
+        ctx.lineTo(mmX + mmSize / 2, mmY + mmSize);
+        ctx.moveTo(mmX, mmY + mmSize / 2);
+        ctx.lineTo(mmX + mmSize, mmY + mmSize / 2);
+        ctx.stroke();
 
         const isPlayerScouting = player && player.scouterEndTime > nowMs;
 
@@ -690,7 +770,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           ctx.arc(
             sx,
             sy,
-            isPlayerScouting || item.type === 'STALKER' || item.type === 'USURPER' ? 4 : 2,
+            isPlayerScouting || item.type === 'STALKER' || item.type === 'USURPER' ? 3.5 : 1.8,
             0,
             Math.PI * 2
           );
@@ -701,11 +781,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           if (!snake.segments[0]) return;
           const sx = mmX + (snake.segments[0].x / WORLD_SIZE) * mmSize;
           const sy = mmY + (snake.segments[0].y / WORLD_SIZE) * mmSize;
-          ctx.fillStyle = snake.id === playerIdRef.current ? 'white' : snake.color;
+          const isMe = snake.id === playerIdRef.current;
+          ctx.fillStyle = isMe ? '#ffffff' : snake.color;
           ctx.beginPath();
-          ctx.arc(sx, sy, snake.id === playerIdRef.current ? 4 : 2, 0, Math.PI * 2);
+          ctx.arc(sx, sy, isMe ? 3.5 : 2, 0, Math.PI * 2);
           ctx.fill();
         });
+
+        ctx.restore();
       } catch (err) {
         console.error('Multiplayer canvas render error:', err);
       }
@@ -714,7 +797,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     requestRef.current = requestAnimationFrame(animate);
 
     return () => {
-      window.removeEventListener('resize', resize);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
@@ -723,53 +805,72 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         socketRef.current = null;
       }
     };
-  }, [resize, playerName, enabledItems]);
+  }, [resize, playerName, enabledItems, sendInput]);
 
-  const handlePointerInput = (clientX: number, clientY: number) => {
-    if (isPaused) return;
-    const dx = clientX - window.innerWidth / 2;
-    const dy = clientY - window.innerHeight / 2;
+  const handlePointerInput = useCallback((clientX: number, clientY: number) => {
+    if (isPausedRef.current || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const dx = clientX - centerX;
+    const dy = clientY - centerY;
     targetAngleRef.current = Math.atan2(dy, dx);
+  }, []);
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    handlePointerInput(e.clientX, e.clientY);
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => handlePointerInput(e.clientX, e.clientY);
-  const handleTouchMove = (e: React.TouchEvent) => handlePointerInput(e.touches[0].clientX, e.touches[0].clientY);
-
   const handleMouseDown = () => {
-    if (isPaused) return;
+    if (isPausedRef.current) return;
     isBoostingRef.current = true;
-    if (socketRef.current && socketRef.current.connected) {
-      const seq = ++inputSequenceRef.current;
-      socketRef.current.emit(SOCKET_EVENTS.PLAYER_INPUT, {
-        sequence: seq,
-        direction: targetAngleRef.current,
-        boost: true,
-      });
-    }
+    sendInput(true);
   };
 
   const handleMouseUp = () => {
+    if (isPausedRef.current) return;
     isBoostingRef.current = false;
-    if (socketRef.current && socketRef.current.connected) {
-      const seq = ++inputSequenceRef.current;
-      socketRef.current.emit(SOCKET_EVENTS.PLAYER_INPUT, {
-        sequence: seq,
-        direction: targetAngleRef.current,
-        boost: false,
-      });
+    sendInput(false);
+  };
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (isPausedRef.current) return;
+    if (e.touches.length > 0) {
+      handlePointerInput(e.touches[0].clientX, e.touches[0].clientY);
+    }
+    // Multi-touch: 2+ touches activates boost
+    if (e.touches.length > 1) {
+      isBoostingRef.current = true;
+      sendInput(true);
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (isPausedRef.current) return;
+    if (e.touches.length > 0) {
+      handlePointerInput(e.touches[0].clientX, e.touches[0].clientY);
+    }
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (isPausedRef.current) return;
+    if (e.touches.length <= 1 && !externalBoostRef.current) {
+      isBoostingRef.current = false;
+      sendInput(false);
     }
   };
 
   return (
     <canvas
       ref={canvasRef}
-      className="w-full h-full block cursor-crosshair touch-none"
+      className="w-full h-full block cursor-crosshair touch-none select-none"
       onMouseMove={handleMouseMove}
       onTouchMove={handleTouchMove}
       onMouseDown={handleMouseDown}
       onMouseUp={handleMouseUp}
-      onTouchStart={handleMouseDown}
-      onTouchEnd={handleMouseUp}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchEnd}
     />
   );
 };
