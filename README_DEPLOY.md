@@ -43,10 +43,10 @@ Este projeto está pronto para deploy direto via **Portainer**:
    REDIS_URL=redis://redis:6379
    ```
 5. Clique em **Deploy the stack**.
-6. Após os containers subirem, abra a aba **Console** do container da aplicação (`app`) ou execute via terminal:
-   ```bash
-   npx prisma migrate deploy
-   ```
+6. A stack iniciará com o fluxo sequencial automático:
+   - PostgreSQL e Redis sobem e passam nos respectivos healthchecks.
+   - O container da aplicação (`app`) executa automaticamente o `prisma migrate deploy` através do entrypoint antes de iniciar o servidor Node.
+   - O jogo fica pronto e seguro na porta `3010` sem necessidade de comandos manuais pós-deploy.
 
 ---
 
@@ -64,10 +64,12 @@ Execute o Docker Compose apontando exclusivamente para o arquivo oficial `compos
 ```bash
 docker compose -f compose.yaml up -d --build
 ```
+*(As migrações do Prisma são aplicadas automaticamente no startup pelo entrypoint seguro).*
 
-### Passo 3: Aplicar as Migrações do Prisma no PostgreSQL
+### Passo 3: (Opcional) Verificar Status das Migrações
+Para auditar o histórico de migrações aplicadas no banco:
 ```bash
-docker compose -f compose.yaml exec app npx prisma migrate deploy
+docker compose -f compose.yaml exec app npx prisma migrate status
 ```
 
 ---

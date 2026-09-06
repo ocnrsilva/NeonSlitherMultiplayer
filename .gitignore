@@ -19,10 +19,13 @@ dist-ssr
 *.local
 
 # Backups (Never commit local database dumps)
-*.sql
 *.dump
 *.backup
 *.gz
+backup*.sql
+*.sql
+!prisma/migrations/**/*.sql
+!prisma/migrations/**
 
 # Editor directories and OS files
 .vscode/*

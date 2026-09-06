@@ -49,6 +49,10 @@ COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma/client ./node_modules/@prisma/client
 
+# Copy entrypoint script for automated migration execution before app startup
+COPY docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
+
 # Ensure unprivileged permissions
 RUN chown -R node:node /app
 
@@ -62,5 +66,5 @@ EXPOSE 3010
 HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=3 \
   CMD wget -qO- http://localhost:3010/api/health || exit 1
 
-# Start the unified server
-CMD ["node", "dist/server.cjs"]
+# Execute migrations then start the server
+ENTRYPOINT ["./docker-entrypoint.sh"]
