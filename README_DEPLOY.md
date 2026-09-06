@@ -42,6 +42,7 @@ Este projeto está pronto para deploy direto via **Portainer**:
    DATABASE_URL=postgresql://neon_prod_user:defina_uma_senha_forte_e_exclusiva@postgres:5432/neon_slither_prod?schema=public
    REDIS_URL=redis://redis:6379
    ```
+   > 💡 **Nota sobre Caracteres Especiais e DATABASE_URL**: O entrypoint agora sanitiza automaticamente a `DATABASE_URL` (corrigindo espaços acidentais e codificando caracteres especiais como `#`, `?`, `/` na senha para evitar o erro `P1013`). Se preferir, você pode até omitir a variável `DATABASE_URL`, pois o container a constrói automaticamente a partir de `POSTGRES_USER`, `POSTGRES_PASSWORD` e `POSTGRES_DB`.
 5. Clique em **Deploy the stack**.
 6. A stack iniciará com o fluxo sequencial automático:
    - PostgreSQL e Redis sobem e passam nos respectivos healthchecks.

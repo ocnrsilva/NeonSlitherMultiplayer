@@ -1,6 +1,19 @@
 #!/bin/sh
 set -e
 
+echo "[Entrypoint] Verifying database connection configuration..."
+
+# Sanitize and validate DATABASE_URL (handles URL encoding, spaces, port fallback)
+if [ -f "./scripts/sanitize-db-url.cjs" ]; then
+  SANITIZED_URL=$(node ./scripts/sanitize-db-url.cjs)
+  if [ $? -eq 0 ] && [ -n "$SANITIZED_URL" ]; then
+    export DATABASE_URL="$SANITIZED_URL"
+  else
+    echo "[Entrypoint] CRITICAL ERROR: Failed to prepare DATABASE_URL."
+    exit 1
+  fi
+fi
+
 echo "[Entrypoint] Checking and applying database migrations via Prisma..."
 
 MAX_RETRIES=5
