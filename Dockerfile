@@ -8,14 +8,17 @@ WORKDIR /app
 # Install build tools needed for native packages if any
 RUN apk add --no-cache python3 make g++
 
-# Copy package manifests
-COPY package.json ./
+# Copy package manifests for reproducible installation
+COPY package.json package-lock.json ./
 
-# Install all dependencies (including devDependencies for bundling)
-RUN npm install
+# Clean reproducible install of all dependencies
+RUN npm ci
 
-# Copy source files
+# Copy source code and Prisma schema
 COPY . .
+
+# Generate Prisma client for build
+RUN npx prisma generate
 
 # Build Vite frontend and bundle server.ts with esbuild to dist/server.cjs
 RUN npm run build
@@ -29,27 +32,35 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Install curl/wget for healthchecks
+# Install wget for container healthcheck
 RUN apk add --no-cache wget
 
-# Copy package manifest
-COPY package.json ./
+# Copy package manifests for production install
+COPY package.json package-lock.json ./
 
 # Install only production dependencies
-RUN npm install --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy compiled frontend and bundled backend from builder
 COPY --from=builder /app/dist ./dist
 
-# Create non-root security context
+# Copy Prisma schema and migrations for deployment / runtime
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/node_modules/@prisma/client ./node_modules/@prisma/client
+
+# Ensure unprivileged permissions
+RUN chown -R node:node /app
+
+# Run as non-root unprivileged user
 USER node
 
-# Expose ONLY the single application port
-EXPOSE 3000
+# Expose ONLY the single application port 3010
+EXPOSE 3010
 
-# Healthcheck verified against internal HTTP health endpoint
-HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:3000/api/health || exit 1
+# Healthcheck verified against internal HTTP health endpoint on 3010
+HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- http://localhost:3010/api/health || exit 1
 
 # Start the unified server
 CMD ["node", "dist/server.cjs"]

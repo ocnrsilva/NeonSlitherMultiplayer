@@ -10,7 +10,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@prisma/client": "^7.10.0",
+    "@prisma/client": "6.4.1",
     "express": "^5.2.1",
     "ioredis": "^6.0.0",
     "react": "^19.2.3",
@@ -28,7 +28,7 @@
     "@types/uuid": "^11.0.0",
     "@vitejs/plugin-react": "^5.0.0",
     "esbuild": "^0.28.2",
-    "prisma": "^8.0.0-rc.13",
+    "prisma": "6.4.1",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.13",
     "typescript": "~5.8.2",

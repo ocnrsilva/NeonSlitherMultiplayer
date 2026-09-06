@@ -1,4 +1,5 @@
 import { Server, Socket } from 'socket.io';
+import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import {
   SOCKET_EVENTS,
@@ -191,7 +192,32 @@ export class GameServer {
 
     // Check reconnection with existing session token
     if (payload.sessionToken) {
-      const existing = this.sessions.get(payload.sessionToken);
+      let existing = this.sessions.get(payload.sessionToken);
+
+      // If not in local server memory, query Redis for session state
+      if (!existing) {
+        try {
+          const cachedJson = await cacheGet(`session:${payload.sessionToken}`);
+          if (cachedJson) {
+            const data = JSON.parse(cachedJson);
+            if (data && data.playerId) {
+              existing = {
+                sessionId: payload.sessionToken,
+                playerId: data.playerId,
+                socketId: socket.id,
+                nickname: data.nickname || payload.name,
+                connected: true,
+                inputCountThisSec: 0,
+                lastInputSecReset: Date.now(),
+              };
+              this.sessions.set(payload.sessionToken, existing);
+            }
+          }
+        } catch (err) {
+          console.warn('[GameServer] Failed to query Redis session:', err);
+        }
+      }
+
       if (existing) {
         session = existing;
         if (session.disconnectTimer) {
@@ -201,14 +227,14 @@ export class GameServer {
         session.connected = true;
         session.socketId = socket.id;
         this.socketToSession.set(socket.id, session.sessionId);
-        console.log(`[GameServer] Player reconnected: ${session.nickname} (${session.playerId})`);
+        console.log(`[GameServer] Player reconnected successfully: ${session.nickname} (${session.playerId})`);
       }
     }
 
     // Create new session if not reconnecting
     if (!session) {
-      const sessionId = uuidv4();
-      const playerId = `p_${uuidv4().substring(0, 8)}`;
+      const sessionId = crypto.randomBytes(24).toString('hex');
+      const playerId = `p_${crypto.randomBytes(6).toString('hex')}`;
       session = {
         sessionId,
         playerId,
@@ -222,8 +248,12 @@ export class GameServer {
       this.sessions.set(sessionId, session);
       this.socketToSession.set(socket.id, sessionId);
 
-      // Cache session in Redis / memory with 1 hour TTL
-      await cacheSet(`session:${sessionId}`, JSON.stringify({ playerId, nickname: payload.name }), 3600);
+      // Cache session in Redis with 30 minutes TTL
+      await cacheSet(
+        `session:${sessionId}`,
+        JSON.stringify({ playerId, nickname: payload.name, createdAt: Date.now() }),
+        1800
+      );
     }
 
     // Check if player snake already exists in the world

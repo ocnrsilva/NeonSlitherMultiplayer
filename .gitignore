@@ -1,3 +1,8 @@
+# Environment & Secrets (Mandatory)
+.env
+.env.*
+!.env.example
+
 # Logs
 logs
 *.log
@@ -7,12 +12,19 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies & Build artifacts
 node_modules
 dist
 dist-ssr
 *.local
 
-# Editor directories and files
+# Backups (Never commit local database dumps)
+*.sql
+*.dump
+*.backup
+*.gz
+
+# Editor directories and OS files
 .vscode/*
 !.vscode/extensions.json
 .idea

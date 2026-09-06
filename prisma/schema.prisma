@@ -31,7 +31,6 @@ model GameSession {
   userId       String?      @map("user_id")
   user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
   socketId     String?      @map("socket_id") @db.VarChar(100)
-  ipAddress    String?      @map("ip_address") @db.VarChar(50)
   userAgent    String?      @map("user_agent") @db.VarChar(255)
   isActive     Boolean      @default(true) @map("is_active")
   createdAt    DateTime     @default(now()) @map("created_at")
