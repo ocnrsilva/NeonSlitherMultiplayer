@@ -1,15 +1,10 @@
 import express from 'express';
 import http from 'http';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { Server as SocketIOServer } from 'socket.io';
-import { createServer as createViteServer } from 'vite';
 import { GameServer } from './server/GameServer';
 import { isPrismaHealthy, disconnectPrisma } from './server/db/prisma';
 import { isRedisHealthy, disconnectRedis } from './server/redis/redisClient';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
@@ -104,6 +99,7 @@ async function startServer() {
 
   // Vite development middleware or static production serving
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
