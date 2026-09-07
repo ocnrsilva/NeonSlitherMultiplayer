@@ -154,7 +154,7 @@ export class GameServer {
 
     // Validate loadout if provided
     let loadout: any = undefined;
-    if (raw.loadout && typeof raw.loadout.enabledItems === 'object') {
+    if (raw.loadout && typeof raw.loadout === 'object' && raw.loadout.enabledItems && typeof raw.loadout.enabledItems === 'object') {
       const validKeys: SpecialItemType[] = ['SIZE', 'SPEED', 'ANGEL', 'MAGNET', 'SCOUTER', 'SLICER', 'USURPER', 'STALKER'];
       const sanitizedEnabled: Record<SpecialItemType, boolean> = {
         SIZE: true,
@@ -256,9 +256,14 @@ export class GameServer {
       );
     }
 
+    // Always synchronize enabled items from client loadout if provided
+    if (payload.loadout?.enabledItems) {
+      this.world.syncEnabledItems(payload.loadout.enabledItems);
+    }
+
     // Check if player snake already exists in the world
     let player = this.world.getPlayer(session.playerId);
-    if (!player) {
+    if (!player || player.data.length <= 0) {
       const spawn = this.spawnSystem.findSafeSpawn(Array.from(this.world.players.values()));
       const color = this.spawnSystem.getRandomColor();
       player = new PlayerEntity(
@@ -272,6 +277,8 @@ export class GameServer {
         session.sessionId
       );
       this.world.addPlayer(player);
+    } else if (payload.loadout) {
+      player.data.loadout = payload.loadout;
     }
 
     // Send init to client
@@ -297,6 +304,10 @@ export class GameServer {
   private async handleRespawn(socket: Socket, session: ClientSession, rawPayload: any): Promise<void> {
     const payload = this.validateJoinPayload(rawPayload);
     session.nickname = payload.name;
+
+    if (payload.loadout?.enabledItems) {
+      this.world.syncEnabledItems(payload.loadout.enabledItems);
+    }
 
     const spawn = this.spawnSystem.findSafeSpawn(Array.from(this.world.players.values()));
     const color = this.spawnSystem.getRandomColor();
@@ -411,8 +422,8 @@ export class GameServer {
       const playerEntity = this.world.getPlayer(session.playerId);
       const playerSnapshot = playerEntity ? playerEntity.toSnapshot() : null;
 
-      // Area-of-interest for food: 1800px around head
-      let foods = this.world.foodSystem.getAll().slice(0, 150).map((f) => ({
+      // Area-of-interest for food: 4500px around head (covers full zoomed-out viewport on any resolution)
+      let foods = this.world.foodSystem.getAll().slice(0, 500).map((f) => ({
         x: Math.round(f.x),
         y: Math.round(f.y),
         size: f.size,
@@ -422,13 +433,15 @@ export class GameServer {
 
       if (playerEntity && playerEntity.data.segments[0]) {
         const head = playerEntity.data.segments[0];
-        const aoi = 1600;
+        const aoi = 4500;
         foods = this.world.foodSystem.getSnapshotsInArea(
           head.x - aoi,
           head.y - aoi,
           head.x + aoi,
           head.y + aoi,
-          180
+          head.x,
+          head.y,
+          2000
         );
       }
 

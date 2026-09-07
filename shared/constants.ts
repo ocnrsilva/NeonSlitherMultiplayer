@@ -7,6 +7,7 @@ export const GRID_CELL_SIZE = 500;
 
 export const GAME_TICK_RATE = 20; // 20 updates per second (50ms)
 export const SNAPSHOT_RATE = 15; // 15 snapshots per second (~66.6ms)
+export const SIMULATION_HERTZ = 60; // 60Hz reference timebase for fluid movement & turning
 
 export const GAME_MAX_PLAYERS = 100;
 export const RECONNECTION_GRACE_MS = 30000; // 30 seconds to reconnect

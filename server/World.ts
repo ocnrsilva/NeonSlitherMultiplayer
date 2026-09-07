@@ -33,6 +33,17 @@ export class World {
   private foodGrid = new SpatialGrid<{ id: string; x: number; y: number; size: number; value: number }>();
   private segmentGrid = new SpatialGrid<{ id: string; x: number; y: number; snakeId: string; isHead: boolean }>();
 
+  private enabledSpecialItems: Record<SpecialItemType, boolean> = {
+    SIZE: true,
+    SPEED: true,
+    MAGNET: true,
+    SCOUTER: true,
+    ANGEL: false,
+    SLICER: false,
+    USURPER: false,
+    STALKER: false,
+  };
+
   constructor() {
     this.init();
   }
@@ -41,16 +52,45 @@ export class World {
     // Initial food spawn
     this.foodSystem.spawnRandom(FOOD_COUNT);
 
-    // Initial special items spawn
-    (Object.keys(SPECIAL_ITEMS_CONFIG) as SpecialItemType[]).forEach((type) => {
-      const conf = SPECIAL_ITEMS_CONFIG[type];
-      for (let i = 0; i < conf.max; i++) {
-        this.specialItems.push(this.spawnSystem.spawnSpecialItem(type, this.specialItems));
-      }
-    });
+    // Initial special items spawn (only enabled items)
+    this.initSpecialItems();
 
     // Populate initial AI snakes
     this.maintainAIs();
+  }
+
+  private initSpecialItems(): void {
+    this.specialItems = [];
+    (Object.keys(SPECIAL_ITEMS_CONFIG) as SpecialItemType[]).forEach((type) => {
+      if (this.enabledSpecialItems[type]) {
+        const conf = SPECIAL_ITEMS_CONFIG[type];
+        for (let i = 0; i < conf.max; i++) {
+          this.specialItems.push(this.spawnSystem.spawnSpecialItem(type, this.specialItems));
+        }
+      }
+    });
+  }
+
+  public syncEnabledItems(enabled: Record<SpecialItemType, boolean>): void {
+    this.enabledSpecialItems = { ...enabled };
+
+    // 1. Immediately remove any items in the world that are not enabled
+    this.specialItems = this.specialItems.filter((item) => this.enabledSpecialItems[item.type] === true);
+
+    // 2. For each enabled type, replace unavailable/stale items with fresh available ones
+    // and ensure exactly conf.max available items exist in the world
+    (Object.keys(SPECIAL_ITEMS_CONFIG) as SpecialItemType[]).forEach((type) => {
+      if (this.enabledSpecialItems[type]) {
+        const conf = SPECIAL_ITEMS_CONFIG[type];
+        // Remove unavailable items of this type so fresh available ones spawn
+        this.specialItems = this.specialItems.filter((item) => item.type !== type || item.isAvailable);
+
+        const currentAvailable = this.specialItems.filter((item) => item.type === type && item.isAvailable).length;
+        for (let i = currentAvailable; i < conf.max; i++) {
+          this.specialItems.push(this.spawnSystem.spawnSpecialItem(type, this.specialItems));
+        }
+      }
+    });
   }
 
   public maintainAIs(): void {
@@ -106,7 +146,7 @@ export class World {
     for (const player of this.players.values()) {
       const { droppedFood } = player.updateMovement(dt, now);
       if (droppedFood) {
-        this.foodSystem.createFood(droppedFood.x, droppedFood.y, 0.5);
+        this.foodSystem.createFood(droppedFood.x, droppedFood.y, 0.6667);
       }
 
       // Border check
@@ -150,15 +190,15 @@ export class World {
       if (isInvincible) continue;
 
       const segs = player.data.segments;
-      // Index segments (stride of 2 for efficiency)
-      for (let i = 1; i < segs.length; i += 2) {
+      // Index all segments (spacing = 5px) to guarantee zero gaps and accurate head-to-head / head-to-body collisions
+      for (let i = 0; i < segs.length; i++) {
         const s = segs[i];
         this.segmentGrid.insert({
           id: `${player.data.id}_${i}`,
           x: s.x,
           y: s.y,
           snakeId: player.data.id,
-          isHead: false,
+          isHead: i === 0,
         });
       }
     }
@@ -193,9 +233,66 @@ export class World {
     }
 
     // 9. Respawn items and maintain entities
-    this.spawnSystem.checkItemRespawns(this.specialItems, now);
-    if (this.foodSystem.count() < FOOD_COUNT) {
-      this.foodSystem.spawnRandom(Math.min(25, FOOD_COUNT - this.foodSystem.count()));
+    const itemsToRespawn: SpecialItemType[] = [];
+    this.specialItems = this.specialItems.filter((item) => {
+      // Se o item nao esta mais habilitado, remove-o imediatamente
+      if (!this.enabledSpecialItems[item.type]) return false;
+      // Verifica se o item esta indisponivel e atingiu o tempo de respawn
+      if (!item.isAvailable && item.respawnAt && now >= item.respawnAt) {
+        itemsToRespawn.push(item.type);
+        return false;
+      }
+      return true;
+    });
+    for (const type of itemsToRespawn) {
+      if (this.enabledSpecialItems[type]) {
+        this.specialItems.push(this.spawnSystem.spawnSpecialItem(type, this.specialItems));
+      }
+    }
+
+    // Garante que cada tipo habilitado mantenha conf.max itens no mundo
+    for (const type of Object.keys(SPECIAL_ITEMS_CONFIG) as SpecialItemType[]) {
+      if (this.enabledSpecialItems[type]) {
+        const conf = SPECIAL_ITEMS_CONFIG[type];
+        const count = this.specialItems.filter((item) => item.type === type).length;
+        for (let i = count; i < conf.max; i++) {
+          this.specialItems.push(this.spawnSystem.spawnSpecialItem(type, this.specialItems));
+        }
+      }
+    }
+
+    // Dynamic food count matching offline
+    let dynamicFoodTarget = FOOD_COUNT;
+    let maxPlayerLength = 0;
+    for (const player of this.players.values()) {
+      if (player.data.isPlayer && player.data.length > maxPlayerLength) {
+        maxPlayerLength = player.data.length;
+      }
+    }
+    if (maxPlayerLength > 50) {
+      dynamicFoodTarget += Math.floor((maxPlayerLength - 50) * 20);
+      dynamicFoodTarget = Math.min(dynamicFoodTarget, 12000);
+    }
+
+    const currentFoodCount = this.foodSystem.count();
+    if (currentFoodCount < dynamicFoodTarget) {
+      const needed = dynamicFoodTarget - currentFoodCount;
+      if (needed > 50) {
+        const clusterSize = maxPlayerLength > 100 ? 40 : 15;
+        const clusters = Math.min(8, Math.floor(needed / clusterSize));
+        for (let i = 0; i < clusters; i++) {
+          this.foodSystem.spawnCluster(
+            clusterSize,
+            {
+              x: Math.random() * (WORLD_WIDTH - 1000) + 500,
+              y: Math.random() * (WORLD_HEIGHT - 1000) + 500,
+            },
+            300
+          );
+        }
+      } else {
+        this.foodSystem.spawnRandom(Math.min(25, needed));
+      }
     }
     this.maintainAIs();
 
@@ -257,16 +354,17 @@ export class World {
       let obstacleDetected = false;
       const isInvincible = ai.data.invincibilityEndTime > now;
 
+      // 1. Desvio de obstaculo contra o corpo de outras cobras
       if (!isInvincible) {
         for (const other of allSnakes) {
           if (other.data.id === ai.data.id) continue;
-          for (let i = 0; i < other.data.segments.length; i += 4) {
+          for (let i = 0; i < other.data.segments.length; i += 5) {
             const seg = other.data.segments[i];
             const dx = seg.x - head.x;
             const dy = seg.y - head.y;
             const distSq = dx * dx + dy * dy;
 
-            if (distSq < 130 * 130 && distSq > 0) {
+            if (distSq < 120 * 120 && distSq > 0) {
               ai.data.targetAngle = Math.atan2(dy, dx) + Math.PI + (Math.random() - 0.5);
               obstacleDetected = true;
               if (distSq < 60 * 60) ai.data.isBoosting = true;
@@ -277,16 +375,99 @@ export class World {
         }
       }
 
-      if (!obstacleDetected) {
-        // Find nearest food
-        const nearbyFood = this.foodGrid.queryRadius(head, 400);
-        if (nearbyFood.length > 0) {
-          const nearest = nearbyFood[0];
-          ai.data.targetAngle = Math.atan2(nearest.y - head.y, nearest.x - head.x);
-        } else if (Math.random() < 0.03) {
-          ai.data.targetAngle += (Math.random() - 0.5) * 0.8;
+      let hasTarget = false;
+
+      // 2. Comportamento predatorio (Stalker ou Usurper ativo)
+      const isStalker = ai.data.stalkerEndTime > now;
+      const isUsurper = ai.data.usurperEndTime > now;
+      if (!obstacleDetected && (isStalker || isUsurper)) {
+        let target: PlayerEntity | null = null;
+        let minDistSq = 1200 * 1200;
+        for (const other of allSnakes) {
+          if (other.data.id === ai.data.id) continue;
+          const otherHead = other.data.segments[0];
+          if (!otherHead) continue;
+          const d = (head.x - otherHead.x) ** 2 + (head.y - otherHead.y) ** 2;
+          if (d < minDistSq) {
+            minDistSq = d;
+            target = other;
+          }
+        }
+        if (target && target.data.segments[0]) {
+          const targetHead = target.data.segments[0];
+          ai.data.targetAngle = Math.atan2(targetHead.y - head.y, targetHead.x - head.x);
+          if (minDistSq < 400 * 400) ai.data.isBoosting = true;
+          hasTarget = true;
         }
       }
+
+      // 3. Comportamento de ataque com Fatiador (Slicer ativo)
+      const isSlicer = ai.data.slicerEndTime > now;
+      if (!obstacleDetected && !hasTarget && isSlicer) {
+        let target: PlayerEntity | null = null;
+        for (const other of allSnakes) {
+          if (other.data.id === ai.data.id) continue;
+          const otherHead = other.data.segments[0];
+          if (!otherHead) continue;
+          const d = (head.x - otherHead.x) ** 2 + (head.y - otherHead.y) ** 2;
+          if (d < 500 * 500) {
+            target = other;
+            break;
+          }
+        }
+        if (target && target.data.segments[0]) {
+          const targetHead = target.data.segments[0];
+          ai.data.targetAngle = Math.atan2(targetHead.y - head.y, targetHead.x - head.x);
+          hasTarget = true;
+        }
+      }
+
+      // 4. Busca ativa por power-ups / itens especiais habilitados
+      const totalInventory = Object.values(ai.data.powerupInventory).reduce((a: number, b: number) => a + b, 0);
+      const lowInventory = totalInventory < 3;
+      if (!obstacleDetected && !hasTarget && (lowInventory || Math.random() < 0.2)) {
+        let closestItem: SpecialItem | null = null;
+        let minD = lowInventory ? 2000 * 2000 : 1000 * 1000;
+        for (const item of this.specialItems) {
+          if (!item.isAvailable || !this.enabledSpecialItems[item.type]) continue;
+          const d = (head.x - item.x) ** 2 + (head.y - item.y) ** 2;
+          if (d < minD) {
+            minD = d;
+            closestItem = item;
+          }
+        }
+        if (closestItem) {
+          ai.data.targetAngle = Math.atan2(closestItem.y - head.y, closestItem.x - head.x);
+          if (minD < 300 * 300) ai.data.isBoosting = true;
+          hasTarget = true;
+        }
+      }
+
+      // 5. Busca de comida ponderada por valor (exatamente como offline)
+      if (!obstacleDetected && !hasTarget && Math.random() < 0.05) {
+        let closestFood: Point | null = null;
+        let minD = 600 * 600;
+        const nearbyFoods = this.foodGrid.queryRadius(head, 600);
+        for (let i = 0; i < Math.min(nearbyFoods.length, 150); i++) {
+          const f = nearbyFoods[i];
+          const d = (head.x - f.x) ** 2 + (head.y - f.y) ** 2;
+          const weight = f.value > 10 ? 4 : f.value > 3 ? 2 : 1;
+          if (d / weight < minD) {
+            minD = d / weight;
+            closestFood = { x: f.x, y: f.y };
+          }
+        }
+        if (closestFood) {
+          ai.data.targetAngle = Math.atan2(closestFood.y - head.y, closestFood.x - head.x);
+        }
+      }
+
+      // 6. Evitacao de bordas do mapa
+      const borderMargin = 400;
+      if (head.x < borderMargin) ai.data.targetAngle = 0;
+      else if (head.x > WORLD_WIDTH - borderMargin) ai.data.targetAngle = Math.PI;
+      else if (head.y < borderMargin) ai.data.targetAngle = Math.PI / 2;
+      else if (head.y > WORLD_HEIGHT - borderMargin) ai.data.targetAngle = -Math.PI / 2;
     }
   }
 

@@ -1,4 +1,4 @@
-import { GAME_TICK_RATE, SNAPSHOT_RATE } from '../shared/constants';
+import { GAME_TICK_RATE, SNAPSHOT_RATE, SIMULATION_HERTZ } from '../shared/constants';
 
 export class GameLoop {
   private tickIntervalMs: number;
@@ -35,8 +35,8 @@ export class GameLoop {
       const elapsed = (now - this.lastTickTime) / 1000;
       this.lastTickTime = now;
 
-      // Bound delta-time to avoid spiral of death
-      const dt = Math.min(2.5, elapsed * GAME_TICK_RATE);
+      // Bound delta-time to avoid spiral of death (normalized to 60Hz physics scale)
+      const dt = Math.min(6.0, elapsed * SIMULATION_HERTZ);
 
       try {
         this.onTickCallback(dt, now);

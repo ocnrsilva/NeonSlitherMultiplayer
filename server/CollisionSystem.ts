@@ -9,6 +9,23 @@ export interface CollisionResults {
   knivesToRemove: Set<string>;
 }
 
+function distSqPointToSegment(px: number, py: number, x0: number, y0: number, x1: number, y1: number): number {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) {
+    const ddx = px - x1;
+    const ddy = py - y1;
+    return ddx * ddx + ddy * ddy;
+  }
+  const t = Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / lenSq));
+  const projX = x0 + t * dx;
+  const projY = y0 + t * dy;
+  const ddx = px - projX;
+  const ddy = py - projY;
+  return ddx * ddx + ddy * ddy;
+}
+
 export class CollisionSystem {
   public checkFoodCollisions(
     snakes: PlayerEntity[],
@@ -123,11 +140,24 @@ export class CollisionSystem {
       const isStalker = attacker.data.stalkerEndTime > now;
       const isHero = isUsurper || isStalker;
 
-      const collisionRadius = 18;
-      const nearbySegments = segmentGrid.queryRadius(head, collisionRadius);
+      const COLLISION_RADIUS = 15;
+      const radiusSq = COLLISION_RADIUS * COLLISION_RADIUS; // 225
+
+      const p0 = attacker.prevHead || head;
+      const p1 = head;
+
+      const minX = Math.min(p0.x, p1.x) - COLLISION_RADIUS;
+      const maxX = Math.max(p0.x, p1.x) + COLLISION_RADIUS;
+      const minY = Math.min(p0.y, p1.y) - COLLISION_RADIUS;
+      const maxY = Math.max(p0.y, p1.y) + COLLISION_RADIUS;
+
+      const nearbySegments = segmentGrid.queryArea(minX, minY, maxX, maxY);
 
       for (const seg of nearbySegments) {
         if (seg.snakeId === attacker.data.id) continue; // Don't collide with self
+
+        const distSq = distSqPointToSegment(seg.x, seg.y, p0.x, p0.y, p1.x, p1.y);
+        if (distSq >= radiusSq) continue; // Effective collision radius strictly 15px
 
         const targetSnake = snakes.find((s) => s.data.id === seg.snakeId);
         if (!targetSnake) continue;

@@ -87,22 +87,39 @@ export class FoodSystem {
     }
   }
 
-  public getSnapshotsInArea(minX: number, minY: number, maxX: number, maxY: number, maxCount = 200): FoodSnapshot[] {
-    const snapshots: FoodSnapshot[] = [];
-    let count = 0;
+  public getSnapshotsInArea(
+    minX: number,
+    minY: number,
+    maxX: number,
+    maxY: number,
+    centerX?: number,
+    centerY?: number,
+    maxCount = 2000
+  ): FoodSnapshot[] {
+    const matching: Food[] = [];
     for (const f of this.foods.values()) {
       if (f.x >= minX && f.x <= maxX && f.y >= minY && f.y <= maxY) {
-        snapshots.push({
-          x: Math.round(f.x),
-          y: Math.round(f.y),
-          size: f.size,
-          color: f.color,
-          value: f.value,
-        });
-        count++;
-        if (count >= maxCount) break;
+        matching.push(f);
       }
     }
-    return snapshots;
+
+    if (matching.length > maxCount && centerX !== undefined && centerY !== undefined) {
+      matching.sort((a, b) => {
+        const da = (a.x - centerX) ** 2 + (a.y - centerY) ** 2;
+        const db = (b.x - centerX) ** 2 + (b.y - centerY) ** 2;
+        return da - db;
+      });
+      matching.length = maxCount;
+    } else if (matching.length > maxCount) {
+      matching.length = maxCount;
+    }
+
+    return matching.map((f) => ({
+      x: Math.round(f.x),
+      y: Math.round(f.y),
+      size: f.size,
+      color: f.color,
+      value: f.value,
+    }));
   }
 }

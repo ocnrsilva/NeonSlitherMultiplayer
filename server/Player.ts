@@ -20,6 +20,7 @@ interface PendingInput {
 
 export class PlayerEntity {
   public data: Snake;
+  public prevHead: Point;
   private inputQueue: PendingInput[] = [];
 
   constructor(
@@ -40,6 +41,8 @@ export class PlayerEntity {
         y: spawnY - i * SEGMENT_DISTANCE * Math.sin(angle),
       });
     }
+
+    this.prevHead = { x: spawnX, y: spawnY };
 
     this.data = {
       id,
@@ -133,7 +136,7 @@ export class PlayerEntity {
     // Boosting consumes small length
     if (this.data.isBoosting && this.data.segments.length > 5) {
       this.data.speed = currentBaseSpeed * (BOOST_SPEED / BASE_SPEED);
-      if (Math.random() < 0.1) {
+      if (Math.random() < Math.min(0.5, 0.1 * dt)) {
         this.data.length = Math.max(5, this.data.length - 0.1);
         const tail = this.data.segments[this.data.segments.length - 1];
         if (tail) {
@@ -145,6 +148,7 @@ export class PlayerEntity {
     }
 
     const head = this.data.segments[0];
+    this.prevHead = { x: head.x, y: head.y };
     const newHead: Point = {
       x: head.x + Math.cos(this.data.angle) * this.data.speed * dt,
       y: head.y + Math.sin(this.data.angle) * this.data.speed * dt,

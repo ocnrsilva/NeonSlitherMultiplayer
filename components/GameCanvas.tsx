@@ -16,6 +16,13 @@ import {
 import {
   WORLD_SIZE,
   SPECIAL_ITEMS_CONFIG,
+  GAME_TICK_RATE,
+  SIMULATION_HERTZ,
+  BASE_SPEED,
+  BOOST_SPEED,
+  TURN_SPEED,
+  SPECIAL_SPEED_MULTIPLIER,
+  SEGMENT_DISTANCE,
 } from '../constants';
 
 export interface ActivePowerup {
@@ -57,6 +64,17 @@ interface InterpolatedSnake {
   stalkerEndTime: number;
 }
 
+interface SnapshotBufferEntry {
+  time: number; // Local performance.now() reception timestamp
+  serverTime: number; // Authoritative snapshot.timestamp from server
+  snapshot: GameStateSnapshotPayload;
+}
+
+// Server emits at 15 Hz (~66.67ms interval).
+// 90ms delay (~1.35x snapshot interval) ensures client always has a pair of snapshots
+// to smoothly interpolate between in 60/120 FPS without extrapolation stutter.
+const INTERPOLATION_DELAY_MS = 90;
+
 const SESSION_KEY = 'neon_slither_session_token';
 
 const GameCanvas: React.FC<GameCanvasProps> = ({
@@ -83,32 +101,68 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const callbacksRef = useRef({ onScoreUpdate, onLeaderboardUpdate, onPowerupsUpdate, onGameOver });
   callbacksRef.current = { onScoreUpdate, onLeaderboardUpdate, onPowerupsUpdate, onGameOver };
 
-  // Authoritative snapshots buffer for interpolation
-  const prevSnapshotRef = useRef<GameStateSnapshotPayload | null>(null);
-  const latestSnapshotRef = useRef<GameStateSnapshotPayload | null>(null);
-  const lastSnapshotReceivedTime = useRef<number>(0);
+  // Authoritative snapshots sliding buffer for temporal interpolation
+  const snapshotBufferRef = useRef<SnapshotBufferEntry[]>([]);
 
   // Client-side interpolated render state
   const renderSnakesRef = useRef<Map<string, InterpolatedSnake>>(new Map());
   const cameraPosRef = useRef<Point>({ x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 });
+  const cameraInitializedRef = useRef<boolean>(false);
+
+  // Client-side prediction for local player presentation
+  const localPredictedRef = useRef<{
+    initialized: boolean;
+    x: number;
+    y: number;
+    angle: number;
+    segments: Point[];
+    lastTime: number;
+    reconOffsetX: number;
+    reconOffsetY: number;
+  }>({
+    initialized: false,
+    x: WORLD_SIZE / 2,
+    y: WORLD_SIZE / 2,
+    angle: 0,
+    segments: [],
+    lastTime: 0,
+    reconOffsetX: 0,
+    reconOffsetY: 0,
+  });
 
   // Input state
   const targetAngleRef = useRef<number>(0);
   const isBoostingRef = useRef<boolean>(false);
   const inputSequenceRef = useRef<number>(0);
   const lastInputSentTimeRef = useRef<number>(0);
+  const lastSentAngleRef = useRef<number>(-999);
+  const lastSentBoostRef = useRef<boolean>(false);
   const keysPressedRef = useRef<{ [key: string]: boolean }>({});
 
-  const sendInput = useCallback((boostOverride?: boolean) => {
+  const sendInput = useCallback((boostOverride?: boolean, force?: boolean) => {
     if (isPausedRef.current || !socketRef.current || !socketRef.current.connected) return;
-    const seq = ++inputSequenceRef.current;
     const boostActive = boostOverride !== undefined ? boostOverride : (isBoostingRef.current || !!externalBoostRef.current);
+    const currentAngle = targetAngleRef.current;
+    const now = performance.now();
+
+    const angleDiff = Math.abs(currentAngle - lastSentAngleRef.current);
+    const boostChanged = boostActive !== lastSentBoostRef.current;
+    const timeSinceLast = now - lastInputSentTimeRef.current;
+
+    // Send immediately if angle shifted or boost changed, or periodic sync (40ms)
+    if (!force && !boostChanged && angleDiff < 0.015 && timeSinceLast < 40) {
+      return;
+    }
+
+    const seq = ++inputSequenceRef.current;
     socketRef.current.emit(SOCKET_EVENTS.PLAYER_INPUT, {
       sequence: seq,
-      direction: targetAngleRef.current,
+      direction: currentAngle,
       boost: boostActive,
     });
-    lastInputSentTimeRef.current = performance.now();
+    lastInputSentTimeRef.current = now;
+    lastSentAngleRef.current = currentAngle;
+    lastSentBoostRef.current = boostActive;
   }, []);
 
   const resize = useCallback(() => {
@@ -183,26 +237,85 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     });
 
     socket.on(SOCKET_EVENTS.GAME_STATE, (snapshot: GameStateSnapshotPayload) => {
-      prevSnapshotRef.current = latestSnapshotRef.current || snapshot;
-      latestSnapshotRef.current = snapshot;
-      lastSnapshotReceivedTime.current = performance.now();
+      const now = performance.now();
+      snapshotBufferRef.current.push({
+        time: now,
+        serverTime: snapshot.timestamp,
+        snapshot,
+      });
 
-      // Update HUD elements
+      // Maintain a sliding window of recent snapshots (covers ~1.6 seconds at 15Hz)
+      if (snapshotBufferRef.current.length > 25) {
+        snapshotBufferRef.current.shift();
+      }
+
+      // Update HUD elements & reconcile local predicted state
+      const mySnake = snapshot.player || (playerIdRef.current ? snapshot.snakes.find((s) => s.id === playerIdRef.current) : null);
+      if (mySnake && mySnake.segments[0]) {
+        const srvHead = mySnake.segments[0];
+        const pred = localPredictedRef.current;
+
+        if (!pred.initialized) {
+          pred.x = srvHead.x;
+          pred.y = srvHead.y;
+          pred.angle = mySnake.angle;
+          pred.segments = mySnake.segments.map((seg) => ({ x: seg.x, y: seg.y }));
+          pred.initialized = true;
+          pred.reconOffsetX = 0;
+          pred.reconOffsetY = 0;
+          pred.lastTime = performance.now();
+        } else {
+          // Keep segments length aligned with authoritative server length
+          const targetLen = mySnake.segments.length;
+          while (pred.segments.length < targetLen) {
+            const tail = pred.segments[pred.segments.length - 1] || { x: pred.x, y: pred.y };
+            pred.segments.push({ x: tail.x, y: tail.y });
+          }
+          while (pred.segments.length > targetLen) {
+            pred.segments.pop();
+          }
+
+          // Measure divergence between server authoritative head and predicted head
+          const diffX = srvHead.x - pred.x;
+          const diffY = srvHead.y - pred.y;
+          const dist = Math.hypot(diffX, diffY);
+
+          if (dist > 150) {
+            // Large divergence (e.g. respawn / warp): snap directly
+            pred.x = srvHead.x;
+            pred.y = srvHead.y;
+            pred.angle = mySnake.angle;
+            pred.reconOffsetX = 0;
+            pred.reconOffsetY = 0;
+            for (let i = 0; i < pred.segments.length; i++) {
+              if (mySnake.segments[i]) {
+                pred.segments[i].x = mySnake.segments[i].x;
+                pred.segments[i].y = mySnake.segments[i].y;
+              }
+            }
+          } else if (dist > 6) {
+            // Small/medium latency offset: smooth error bleed-off over multiple frames
+            pred.reconOffsetX = diffX;
+            pred.reconOffsetY = diffY;
+          }
+        }
+      }
+
       if (snapshot.player) {
         callbacksRef.current.onScoreUpdate(Math.floor(snapshot.player.score));
 
         // Update active powerups
         if (callbacksRef.current.onPowerupsUpdate) {
           const activePowers: ActivePowerup[] = [];
-          const now = Date.now();
+          const nowMs = Date.now();
 
           const checkPower = (type: SpecialItemType, endTime: number) => {
-            if (endTime > now) {
+            if (endTime > nowMs) {
               const conf = SPECIAL_ITEMS_CONFIG[type];
               if (conf) {
                 activePowers.push({
                   type,
-                  timeLeft: Math.ceil((endTime - now) / 1000),
+                  timeLeft: Math.ceil((endTime - nowMs) / 1000),
                   label: type === 'USURPER' ? 'USURPER' : type === 'STALKER' ? 'STALKER' : type === 'ANGEL' ? 'ANGEL' : type,
                   icon: conf.label,
                   color: conf.color,
@@ -230,6 +343,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     socket.on(SOCKET_EVENTS.PLAYER_DEATH, (death: PlayerDeathPayload) => {
       console.log('[Socket] Player died. Final score:', death.score);
+      localPredictedRef.current.initialized = false;
       callbacksRef.current.onScoreUpdate(death.score);
       callbacksRef.current.onGameOver();
     });
@@ -254,18 +368,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
 
-    // Send input intent to authoritative server
-    const sendInput = () => {
-      if (isPausedRef.current || !socketRef.current || !socketRef.current.connected) return;
-      const seq = ++inputSequenceRef.current;
-      socketRef.current.emit(SOCKET_EVENTS.PLAYER_INPUT, {
-        sequence: seq,
-        direction: targetAngleRef.current,
-        boost: isBoostingRef.current,
-      });
-      lastInputSentTimeRef.current = performance.now();
-    };
-
     // Keyboard navigation update
     const updateKeyboard = () => {
       let dx = 0;
@@ -276,7 +378,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       if (keysPressedRef.current['d'] || keysPressedRef.current['arrowright']) dx += 1;
 
       if (dx !== 0 || dy !== 0) {
-        targetAngleRef.current = Math.atan2(dy, dx);
+        const newAngle = Math.atan2(dy, dx);
+        if (Math.abs(newAngle - targetAngleRef.current) > 0.01) {
+          targetAngleRef.current = newAngle;
+          sendInput();
+        }
       }
     };
 
@@ -389,9 +495,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         const ctx = canvas?.getContext('2d');
         if (!canvas || !ctx) return;
 
-        const latest = latestSnapshotRef.current;
-        const prev = prevSnapshotRef.current;
-        if (!latest) {
+        const buffer = snapshotBufferRef.current;
+        if (buffer.length === 0) {
           // Waiting for first snapshot
           ctx.fillStyle = '#020617';
           ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -402,50 +507,204 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           return;
         }
 
-        // Calculate interpolation factor alpha (0 to 1)
-        const snapshotInterval = 1000 / 15; // ~66ms
-        const elapsedSinceSnapshot = performance.now() - lastSnapshotReceivedTime.current;
-        const alpha = Math.min(1.2, Math.max(0, elapsedSinceSnapshot / snapshotInterval));
+        // Temporal interpolation calculation using performance.now()
+        const now = performance.now();
+        const renderTime = now - INTERPOLATION_DELAY_MS;
 
-        // Update render snakes with lerp
+        let s0: SnapshotBufferEntry;
+        let s1: SnapshotBufferEntry;
+        let t = 0;
+
+        if (buffer.length === 1) {
+          s0 = buffer[0];
+          s1 = buffer[0];
+          t = 1;
+        } else if (renderTime <= buffer[0].time) {
+          // renderTime older than oldest snapshot in buffer
+          s0 = buffer[0];
+          s1 = buffer[0];
+          t = 0;
+        } else if (renderTime >= buffer[buffer.length - 1].time) {
+          // renderTime newer than latest received snapshot (network jitter / packet delay)
+          s0 = buffer[buffer.length - 2];
+          s1 = buffer[buffer.length - 1];
+          const span = s1.time - s0.time;
+          t = span > 0 ? (renderTime - s0.time) / span : 1;
+          // Bounded fallback: strictly cap extrapolation to prevent jumping or teleports
+          t = Math.min(1.05, Math.max(0, t));
+        } else {
+          // Find the two surrounding snapshots for renderTime
+          let i = buffer.length - 1;
+          while (i > 0 && buffer[i].time > renderTime) {
+            i--;
+          }
+          s0 = buffer[i];
+          s1 = buffer[i + 1];
+          const span = s1.time - s0.time;
+          t = span > 0 ? (renderTime - s0.time) / span : 1;
+          t = Math.min(1, Math.max(0, t));
+        }
+
+        const s0Snap = s0.snapshot;
+        const s1Snap = s1.snapshot;
+        const latest = s1Snap;
+
+        // --- 1. Client-Side Prediction for Local Player Presentation ---
+        const pred = localPredictedRef.current;
+        if (pred.initialized) {
+          const lastTime = pred.lastTime || now;
+          pred.lastTime = now;
+          const dtSec = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000));
+          const dt = dtSec * SIMULATION_HERTZ;
+
+          // Immediate angular response: angle turns toward targetAngleRef.current on THIS frame
+          let angleDiff = targetAngleRef.current - pred.angle;
+          while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+          while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+          pred.angle += angleDiff * TURN_SPEED * dt;
+
+          // Compute movement speed using authoritative powerup metadata
+          let currentBaseSpeed = BASE_SPEED;
+          const localMeta = latest.snakes.find((s) => s.id === playerIdRef.current);
+          if (localMeta && localMeta.speedBoostEndTime > Date.now()) {
+            currentBaseSpeed *= SPECIAL_SPEED_MULTIPLIER;
+          }
+          const isBoosting = isBoostingRef.current || !!externalBoostRef.current;
+          const speed = (isBoosting && pred.segments.length > 5)
+            ? currentBaseSpeed * (BOOST_SPEED / BASE_SPEED)
+            : currentBaseSpeed;
+
+          const step = speed * dt;
+          pred.x += Math.cos(pred.angle) * step;
+          pred.y += Math.sin(pred.angle) * step;
+          pred.x = Math.max(10, Math.min(WORLD_SIZE - 10, pred.x));
+          pred.y = Math.max(10, Math.min(WORLD_SIZE - 10, pred.y));
+
+          // Soft reconciliation decay over multiple frames
+          if (Math.abs(pred.reconOffsetX) > 0.01 || Math.abs(pred.reconOffsetY) > 0.01) {
+            pred.x += pred.reconOffsetX * 0.12;
+            pred.y += pred.reconOffsetY * 0.12;
+            pred.reconOffsetX *= 0.85;
+            pred.reconOffsetY *= 0.85;
+          }
+
+          // Update head segment
+          if (pred.segments.length > 0) {
+            pred.segments[0].x = pred.x;
+            pred.segments[0].y = pred.y;
+          }
+
+          // Inverse-kinematic segment following constraint for smooth organic body curvature
+          const targetDist = SEGMENT_DISTANCE;
+          for (let i = 1; i < pred.segments.length; i++) {
+            const leader = pred.segments[i - 1];
+            const follower = pred.segments[i];
+            const dx = follower.x - leader.x;
+            const dy = follower.y - leader.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist > targetDist) {
+              const ratio = targetDist / dist;
+              follower.x = leader.x + dx * ratio;
+              follower.y = leader.y + dy * ratio;
+            }
+          }
+        }
+
+        // Update render snakes: local player uses prediction, remote snakes use temporal interpolation
         const currentRenderSnakes = renderSnakesRef.current;
         const activeIds = new Set<string>();
 
+        const s0SnakesMap = new Map<string, SnakeSnapshot>();
+        for (let i = 0; i < s0Snap.snakes.length; i++) {
+          const s = s0Snap.snakes[i];
+          s0SnakesMap.set(s.id, s);
+        }
+
         latest.snakes.forEach((targetSnake) => {
           activeIds.add(targetSnake.id);
+          const isLocal = targetSnake.id === playerIdRef.current;
+          const s0Snake = s0SnakesMap.get(targetSnake.id);
           let current = currentRenderSnakes.get(targetSnake.id);
 
           if (!current) {
-            // New snake
+            // New snake entered viewport / game
             current = {
-              ...targetSnake,
-              segments: targetSnake.segments.map((s) => ({ ...s })),
+              id: targetSnake.id,
+              name: targetSnake.name,
+              color: targetSnake.color,
+              segments: targetSnake.segments.map((seg) => ({ x: seg.x, y: seg.y })),
+              angle: targetSnake.angle,
+              length: targetSnake.length,
+              isPlayer: targetSnake.isPlayer,
+              score: targetSnake.score,
+              isBoosting: targetSnake.isBoosting,
+              powerupInventory: targetSnake.powerupInventory,
+              speedBoostEndTime: targetSnake.speedBoostEndTime,
+              invincibilityEndTime: targetSnake.invincibilityEndTime,
+              magnetEndTime: targetSnake.magnetEndTime,
+              scouterEndTime: targetSnake.scouterEndTime,
+              slicerEndTime: targetSnake.slicerEndTime,
+              usurperEndTime: targetSnake.usurperEndTime,
+              stalkerEndTime: targetSnake.stalkerEndTime,
             };
             currentRenderSnakes.set(targetSnake.id, current);
           } else {
-            // Smoothly interpolate segments
-            const lerpSpeed = Math.min(1.0, alpha * 0.4 + 0.3);
-            const targetSegs = targetSnake.segments;
+            if (isLocal && pred.initialized) {
+              // Local player presentation: strictly use predicted state for instant feedback
+              for (let i = 0; i < pred.segments.length; i++) {
+                if (!current.segments[i]) current.segments.push({ x: 0, y: 0 });
+                current.segments[i].x = pred.segments[i].x;
+                current.segments[i].y = pred.segments[i].y;
+              }
+              current.segments.length = pred.segments.length;
+              current.angle = pred.angle;
+              current.length = targetSnake.length;
+            } else {
+              // Remote players: keep temporal snapshot interpolation between s0 and s1
+              const targetSegs = targetSnake.segments;
+              const targetLen = targetSegs.length;
 
-            // Match length
-            while (current.segments.length < targetSegs.length) {
-              current.segments.push({ ...targetSegs[current.segments.length] });
-            }
-            while (current.segments.length > targetSegs.length) {
-              current.segments.pop();
-            }
+              while (current.segments.length < targetLen) {
+                current.segments.push({ x: 0, y: 0 });
+              }
+              if (current.segments.length > targetLen) {
+                current.segments.length = targetLen;
+              }
 
-            for (let i = 0; i < current.segments.length; i++) {
-              current.segments[i].x += (targetSegs[i].x - current.segments[i].x) * lerpSpeed;
-              current.segments[i].y += (targetSegs[i].y - current.segments[i].y) * lerpSpeed;
+              if (s0Snake) {
+                const n0 = s0Snake.segments.length;
+                for (let i = 0; i < targetLen; i++) {
+                  const p1 = targetSegs[i];
+                  if (i < n0) {
+                    const p0 = s0Snake.segments[i];
+                    current.segments[i].x = p0.x + (p1.x - p0.x) * t;
+                    current.segments[i].y = p0.y + (p1.y - p0.y) * t;
+                  } else {
+                    const p0Tail = s0Snake.segments[n0 - 1] || p1;
+                    current.segments[i].x = p0Tail.x + (p1.x - p0Tail.x) * t;
+                    current.segments[i].y = p0Tail.y + (p1.y - p0Tail.y) * t;
+                  }
+                }
+
+                let diff = (targetSnake.angle - s0Snake.angle) % (Math.PI * 2);
+                if (diff < -Math.PI) diff += Math.PI * 2;
+                if (diff > Math.PI) diff -= Math.PI * 2;
+                current.angle = s0Snake.angle + diff * t;
+                current.length = s0Snake.length + (targetSnake.length - s0Snake.length) * t;
+              } else {
+                for (let i = 0; i < targetLen; i++) {
+                  current.segments[i].x = targetSegs[i].x;
+                  current.segments[i].y = targetSegs[i].y;
+                }
+                current.angle = targetSnake.angle;
+                current.length = targetSnake.length;
+              }
             }
 
             current.name = targetSnake.name;
             current.color = targetSnake.color;
-            current.angle = targetSnake.angle;
-            current.length = targetSnake.length;
             current.score = targetSnake.score;
-            current.isBoosting = targetSnake.isBoosting;
+            current.isBoosting = isLocal ? (isBoostingRef.current || !!externalBoostRef.current) : targetSnake.isBoosting;
             current.powerupInventory = targetSnake.powerupInventory;
             current.speedBoostEndTime = targetSnake.speedBoostEndTime;
             current.invincibilityEndTime = targetSnake.invincibilityEndTime;
@@ -457,19 +716,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           }
         });
 
-        // Remove snakes no longer present
+        // Remove snakes no longer present in latest snapshot
         for (const id of currentRenderSnakes.keys()) {
           if (!activeIds.has(id)) {
             currentRenderSnakes.delete(id);
           }
         }
 
-        // Locate local player
+        // Locate local player and synchronize camera with zero latency
         const player = playerIdRef.current ? currentRenderSnakes.get(playerIdRef.current) : null;
         if (player && player.segments[0]) {
           const head = player.segments[0];
-          cameraPosRef.current.x += (head.x - cameraPosRef.current.x) * 0.15;
-          cameraPosRef.current.y += (head.y - cameraPosRef.current.y) * 0.15;
+          cameraPosRef.current.x = head.x;
+          cameraPosRef.current.y = head.y;
+          cameraInitializedRef.current = true;
         }
 
         // Clear canvas
@@ -505,11 +765,29 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.lineWidth = 20;
         ctx.strokeRect(0, 0, WORLD_SIZE, WORLD_SIZE);
 
-        // Draw Knives
+        // Draw Knives with temporal interpolation
+        const s0KnivesMap = new Map<string, KnifeSnapshot>();
+        for (let i = 0; i < s0Snap.knives.length; i++) {
+          const k = s0Snap.knives[i];
+          s0KnivesMap.set(k.id, k);
+        }
+
         latest.knives.forEach((knife) => {
           ctx.save();
-          ctx.translate(knife.x, knife.y);
-          ctx.rotate(knife.angle);
+          const k0 = s0KnivesMap.get(knife.id);
+          let kx = knife.x;
+          let ky = knife.y;
+          let kAngle = knife.angle;
+          if (k0) {
+            kx = k0.x + (knife.x - k0.x) * t;
+            ky = k0.y + (knife.y - k0.y) * t;
+            let diff = (knife.angle - k0.angle) % (Math.PI * 2);
+            if (diff < -Math.PI) diff += Math.PI * 2;
+            if (diff > Math.PI) diff -= Math.PI * 2;
+            kAngle = k0.angle + diff * t;
+          }
+          ctx.translate(kx, ky);
+          ctx.rotate(kAngle);
           ctx.shadowBlur = 10;
           ctx.shadowColor = 'white';
           ctx.fillStyle = '#e2e8f0';
@@ -815,7 +1093,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const dx = clientX - centerX;
     const dy = clientY - centerY;
     targetAngleRef.current = Math.atan2(dy, dx);
-  }, []);
+    sendInput();
+  }, [sendInput]);
 
   const handleMouseMove = (e: React.MouseEvent) => {
     handlePointerInput(e.clientX, e.clientY);
