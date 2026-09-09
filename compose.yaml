@@ -12,8 +12,8 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
       - POSTGRES_DB=${POSTGRES_DB:-}
       - REDIS_URL=${REDIS_URL:?REDIS_URL is required}
-      - SESSION_SECRET=${SESSION_SECRET:?SESSION_SECRET is required}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:?ALLOWED_ORIGINS is required}
+      - MAX_ROOMS=${MAX_ROOMS:-32}
       - GAME_SERVER_NAME=${GAME_SERVER_NAME:-neon-slither-01}
     ports:
       - "${APP_PORT:-3010}:3010"

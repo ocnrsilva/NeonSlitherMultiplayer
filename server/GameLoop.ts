@@ -21,9 +21,17 @@ export class GameLoop {
     this.onSnapshotCallback = onSnapshot;
   }
 
+  public get active(): boolean {
+    return this.isRunning && this.timer !== null;
+  }
+
   public start(): void {
-    if (this.isRunning) return;
+    if (this.isRunning && this.timer !== null) return;
     this.isRunning = true;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
     this.lastTickTime = Date.now();
     this.lastSnapshotTime = Date.now();
 

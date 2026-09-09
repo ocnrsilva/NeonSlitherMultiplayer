@@ -55,8 +55,10 @@ export class World {
     // Initial special items spawn (only enabled items)
     this.initSpecialItems();
 
-    // Populate initial AI snakes
-    this.maintainAIs();
+    // Populate initial AI snakes somente se houver jogadores humanos
+    if (this.getHumanCount() > 0) {
+      this.maintainAIs();
+    }
   }
 
   private initSpecialItems(): void {
@@ -93,7 +95,46 @@ export class World {
     });
   }
 
-  public maintainAIs(): void {
+  public getBotCount(): number {
+    let count = 0;
+    for (const p of this.players.values()) {
+      if (!p.data.isPlayer) count++;
+    }
+    return count;
+  }
+
+  public getHumanCount(): number {
+    let count = 0;
+    for (const p of this.players.values()) {
+      if (p.data.isPlayer) count++;
+    }
+    return count;
+  }
+
+  public clearBots(): void {
+    for (const [id, p] of this.players.entries()) {
+      if (!p.data.isPlayer) {
+        this.players.delete(id);
+      }
+    }
+  }
+
+  public destroy(): void {
+    this.clearBots();
+    this.players.clear();
+    this.foodSystem.clear();
+    this.specialItems = [];
+    this.knives = [];
+    this.foodGrid.clear();
+    this.segmentGrid.clear();
+  }
+
+  public maintainAIs(activeHumanCount?: number): void {
+    const humans = activeHumanCount !== undefined ? activeHumanCount : this.getHumanCount();
+    if (humans === 0) {
+      return;
+    }
+
     let aiCount = 0;
     for (const p of this.players.values()) {
       if (!p.data.isPlayer) aiCount++;
@@ -127,10 +168,15 @@ export class World {
     return this.players.get(id);
   }
 
-  public update(dt: number, now: number): {
+  public update(dt: number, now: number, activeHumanCount?: number): {
     deadPlayers: { player: PlayerEntity; killerId?: string; reason: 'COLLISION' | 'BORDER' | 'STALKER' | 'KNIFE' }[];
   } {
     const deadPlayers: { player: PlayerEntity; killerId?: string; reason: 'COLLISION' | 'BORDER' | 'STALKER' | 'KNIFE' }[] = [];
+
+    const humans = activeHumanCount !== undefined ? activeHumanCount : this.getHumanCount();
+    if (humans === 0) {
+      return { deadPlayers };
+    }
 
     // 1. Process inputs for all players
     for (const player of this.players.values()) {
@@ -294,7 +340,7 @@ export class World {
         this.foodSystem.spawnRandom(Math.min(25, needed));
       }
     }
-    this.maintainAIs();
+    this.maintainAIs(humans);
 
     return { deadPlayers };
   }
@@ -342,6 +388,7 @@ export class World {
   }
 
   private updateAIs(now: number): void {
+    if (this.getHumanCount() === 0) return;
     const allSnakes = Array.from(this.players.values());
 
     for (const ai of allSnakes) {

@@ -35,7 +35,7 @@ Este projeto está pronto para deploy direto via **Portainer**:
    NODE_ENV=production
    GAME_SERVER_NAME=neon-slither-prod-01
    ALLOWED_ORIGINS=http://seu-dominio.com,https://seu-dominio.com
-   SESSION_SECRET=gere_uma_chave_hex_com_openssl_rand_hex_32
+   MAX_ROOMS=32
    POSTGRES_USER=neon_prod_user
    POSTGRES_PASSWORD=defina_uma_senha_forte_e_exclusiva
    POSTGRES_DB=neon_slither_prod

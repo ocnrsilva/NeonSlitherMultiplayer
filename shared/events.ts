@@ -34,11 +34,13 @@ export interface GameInitPayload {
   tickRate: number;
   snapshotRate: number;
   color: string;
+  roomId?: string;
 }
 
 export interface GameStateSnapshotPayload {
   sequence: number;
   timestamp: number;
+  roomId?: string;
   player: SnakeSnapshot | null;
   snakes: SnakeSnapshot[];
   foods: FoodSnapshot[];

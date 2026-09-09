@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import {
   SpecialItemType,
@@ -24,6 +24,14 @@ import {
   SPECIAL_SPEED_MULTIPLIER,
   SEGMENT_DISTANCE,
 } from '../constants';
+
+export type ConnectionState =
+  | 'CONNECTING'
+  | 'JOINING'
+  | 'PLAYING'
+  | 'RECONNECTING'
+  | 'DISCONNECTED'
+  | 'GAME_OVER';
 
 export interface ActivePowerup {
   type: SpecialItemType;
@@ -92,6 +100,19 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const requestRef = useRef<number | undefined>(undefined);
   const playerIdRef = useRef<string | null>(null);
 
+  // Connection state management
+  const connectionStateRef = useRef<ConnectionState>('CONNECTING');
+  const [, setConnectionState] = useState<ConnectionState>('CONNECTING');
+
+  const setConnState = useCallback((nextState: ConnectionState) => {
+    connectionStateRef.current = nextState;
+    setConnectionState(nextState);
+  }, []);
+
+  // Room and sequence validation
+  const roomIdRef = useRef<string | null>(null);
+  const lastSequenceRef = useRef<number>(-1);
+
   const isPausedRef = useRef(isPaused);
   isPausedRef.current = isPaused;
 
@@ -140,7 +161,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const keysPressedRef = useRef<{ [key: string]: boolean }>({});
 
   const sendInput = useCallback((boostOverride?: boolean, force?: boolean) => {
-    if (isPausedRef.current || !socketRef.current || !socketRef.current.connected) return;
+    if (
+      connectionStateRef.current !== 'PLAYING' ||
+      isPausedRef.current ||
+      !socketRef.current ||
+      !socketRef.current.connected
+    ) {
+      return;
+    }
     const boostActive = boostOverride !== undefined ? boostOverride : (isBoostingRef.current || !!externalBoostRef.current);
     const currentAngle = targetAngleRef.current;
     const now = performance.now();
@@ -221,6 +249,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     socket.on('connect', () => {
       console.log('[Socket] Connected to game server.');
+      setConnState('JOINING');
       const savedToken = localStorage.getItem(SESSION_KEY) || undefined;
       socket.emit(SOCKET_EVENTS.GAME_JOIN, {
         name: playerName,
@@ -229,14 +258,75 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       });
     });
 
+    socket.on('disconnect', (reason) => {
+      console.log('[Socket] Disconnected from game server. Reason:', reason);
+      if (connectionStateRef.current !== 'GAME_OVER') {
+        setConnState('RECONNECTING');
+      }
+    });
+
+    socket.on('connect_error', (err) => {
+      console.warn('[Socket] Connect error:', err.message);
+      if (connectionStateRef.current !== 'GAME_OVER') {
+        setConnState('RECONNECTING');
+      }
+    });
+
+    socket.io.on('reconnect_attempt', (attempt) => {
+      console.log(`[Socket] Reconnect attempt #${attempt}`);
+      if (connectionStateRef.current !== 'GAME_OVER') {
+        setConnState('RECONNECTING');
+      }
+    });
+
+    socket.io.on('reconnect_failed', () => {
+      console.error('[Socket] Reconnect failed definitively.');
+      if (connectionStateRef.current !== 'GAME_OVER') {
+        setConnState('DISCONNECTED');
+      }
+    });
+
     socket.on(SOCKET_EVENTS.GAME_INIT, (init: GameInitPayload) => {
+      const isNewRoom = !roomIdRef.current || (init.roomId && init.roomId !== roomIdRef.current);
+      roomIdRef.current = init.roomId || null;
       playerIdRef.current = init.playerId;
+
       if (init.sessionToken) {
         localStorage.setItem(SESSION_KEY, init.sessionToken);
+      }
+
+      if (isNewRoom) {
+        // Novo Room detectado: limpar completamente o contexto e buffers do Room anterior
+        lastSequenceRef.current = -1;
+        snapshotBufferRef.current = [];
+        renderSnakesRef.current.clear();
+        localPredictedRef.current.initialized = false;
+      } else {
+        // Reconexão no mesmo Room: limpar snapshots acumulados e reancorar predição no estado autoritativo
+        snapshotBufferRef.current = [];
+        localPredictedRef.current.initialized = false;
       }
     });
 
     socket.on(SOCKET_EVENTS.GAME_STATE, (snapshot: GameStateSnapshotPayload) => {
+      // 1. Validar se o snapshot pertence ao Room atualmente ativo
+      if (roomIdRef.current && snapshot.roomId && snapshot.roomId !== roomIdRef.current) {
+        return; // Descarta snapshot de sala antiga ou incorreta
+      }
+
+      // 2. Validar monotonicidade da sequência (descartar snapshots antigos ou duplicados)
+      if (typeof snapshot.sequence === 'number') {
+        if (snapshot.sequence <= lastSequenceRef.current) {
+          return; // Snapshot atrasado ou fora de ordem
+        }
+        lastSequenceRef.current = snapshot.sequence;
+      }
+
+      // 3. Transição segura para PLAYING ao receber snapshot válido
+      if (connectionStateRef.current === 'JOINING' || connectionStateRef.current === 'RECONNECTING') {
+        setConnState('PLAYING');
+      }
+
       const now = performance.now();
       snapshotBufferRef.current.push({
         time: now,
@@ -343,6 +433,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     socket.on(SOCKET_EVENTS.PLAYER_DEATH, (death: PlayerDeathPayload) => {
       console.log('[Socket] Player died. Final score:', death.score);
+      setConnState('GAME_OVER');
       localPredictedRef.current.initialized = false;
       callbacksRef.current.onScoreUpdate(death.score);
       callbacksRef.current.onGameOver();
@@ -503,7 +594,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
           ctx.fillStyle = '#64748b';
           ctx.font = 'bold 16px sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText('Conectando ao servidor multiplayer...', canvas.width / 2, canvas.height / 2);
+
+          let statusMsg = 'Conectando ao servidor multiplayer...';
+          if (connectionStateRef.current === 'DISCONNECTED') {
+            statusMsg = 'Não foi possível conectar ao servidor.';
+          } else if (connectionStateRef.current === 'RECONNECTING') {
+            statusMsg = 'Conexão perdida. Tentando reconectar...';
+          }
+          ctx.fillText(statusMsg, canvas.width / 2, canvas.height / 2);
           return;
         }
 
@@ -552,61 +650,66 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         // --- 1. Client-Side Prediction for Local Player Presentation ---
         const pred = localPredictedRef.current;
         if (pred.initialized) {
-          const lastTime = pred.lastTime || now;
-          pred.lastTime = now;
-          const dtSec = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000));
-          const dt = dtSec * SIMULATION_HERTZ;
+          if (connectionStateRef.current === 'PLAYING') {
+            const lastTime = pred.lastTime || now;
+            pred.lastTime = now;
+            const dtSec = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000));
+            const dt = dtSec * SIMULATION_HERTZ;
 
-          // Immediate angular response: angle turns toward targetAngleRef.current on THIS frame
-          let angleDiff = targetAngleRef.current - pred.angle;
-          while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-          while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-          pred.angle += angleDiff * TURN_SPEED * dt;
+            // Immediate angular response: angle turns toward targetAngleRef.current on THIS frame
+            let angleDiff = targetAngleRef.current - pred.angle;
+            while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+            while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+            pred.angle += angleDiff * TURN_SPEED * dt;
 
-          // Compute movement speed using authoritative powerup metadata
-          let currentBaseSpeed = BASE_SPEED;
-          const localMeta = latest.snakes.find((s) => s.id === playerIdRef.current);
-          if (localMeta && localMeta.speedBoostEndTime > Date.now()) {
-            currentBaseSpeed *= SPECIAL_SPEED_MULTIPLIER;
-          }
-          const isBoosting = isBoostingRef.current || !!externalBoostRef.current;
-          const speed = (isBoosting && pred.segments.length > 5)
-            ? currentBaseSpeed * (BOOST_SPEED / BASE_SPEED)
-            : currentBaseSpeed;
-
-          const step = speed * dt;
-          pred.x += Math.cos(pred.angle) * step;
-          pred.y += Math.sin(pred.angle) * step;
-          pred.x = Math.max(10, Math.min(WORLD_SIZE - 10, pred.x));
-          pred.y = Math.max(10, Math.min(WORLD_SIZE - 10, pred.y));
-
-          // Soft reconciliation decay over multiple frames
-          if (Math.abs(pred.reconOffsetX) > 0.01 || Math.abs(pred.reconOffsetY) > 0.01) {
-            pred.x += pred.reconOffsetX * 0.12;
-            pred.y += pred.reconOffsetY * 0.12;
-            pred.reconOffsetX *= 0.85;
-            pred.reconOffsetY *= 0.85;
-          }
-
-          // Update head segment
-          if (pred.segments.length > 0) {
-            pred.segments[0].x = pred.x;
-            pred.segments[0].y = pred.y;
-          }
-
-          // Inverse-kinematic segment following constraint for smooth organic body curvature
-          const targetDist = SEGMENT_DISTANCE;
-          for (let i = 1; i < pred.segments.length; i++) {
-            const leader = pred.segments[i - 1];
-            const follower = pred.segments[i];
-            const dx = follower.x - leader.x;
-            const dy = follower.y - leader.y;
-            const dist = Math.hypot(dx, dy);
-            if (dist > targetDist) {
-              const ratio = targetDist / dist;
-              follower.x = leader.x + dx * ratio;
-              follower.y = leader.y + dy * ratio;
+            // Compute movement speed using authoritative powerup metadata
+            let currentBaseSpeed = BASE_SPEED;
+            const localMeta = latest.snakes.find((s) => s.id === playerIdRef.current);
+            if (localMeta && localMeta.speedBoostEndTime > Date.now()) {
+              currentBaseSpeed *= SPECIAL_SPEED_MULTIPLIER;
             }
+            const isBoosting = isBoostingRef.current || !!externalBoostRef.current;
+            const speed = (isBoosting && pred.segments.length > 5)
+              ? currentBaseSpeed * (BOOST_SPEED / BASE_SPEED)
+              : currentBaseSpeed;
+
+            const step = speed * dt;
+            pred.x += Math.cos(pred.angle) * step;
+            pred.y += Math.sin(pred.angle) * step;
+            pred.x = Math.max(10, Math.min(WORLD_SIZE - 10, pred.x));
+            pred.y = Math.max(10, Math.min(WORLD_SIZE - 10, pred.y));
+
+            // Soft reconciliation decay over multiple frames
+            if (Math.abs(pred.reconOffsetX) > 0.01 || Math.abs(pred.reconOffsetY) > 0.01) {
+              pred.x += pred.reconOffsetX * 0.12;
+              pred.y += pred.reconOffsetY * 0.12;
+              pred.reconOffsetX *= 0.85;
+              pred.reconOffsetY *= 0.85;
+            }
+
+            // Update head segment
+            if (pred.segments.length > 0) {
+              pred.segments[0].x = pred.x;
+              pred.segments[0].y = pred.y;
+            }
+
+            // Inverse-kinematic segment following constraint for smooth organic body curvature
+            const targetDist = SEGMENT_DISTANCE;
+            for (let i = 1; i < pred.segments.length; i++) {
+              const leader = pred.segments[i - 1];
+              const follower = pred.segments[i];
+              const dx = follower.x - leader.x;
+              const dy = follower.y - leader.y;
+              const dist = Math.hypot(dx, dy);
+              if (dist > targetDist) {
+                const ratio = targetDist / dist;
+                follower.x = leader.x + dx * ratio;
+                follower.y = leader.y + dy * ratio;
+              }
+            }
+          } else {
+            // Freeze prediction time progression while offline/reconnecting so dt doesn't jump
+            pred.lastTime = now;
           }
         }
 
@@ -1067,6 +1170,38 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         });
 
         ctx.restore();
+
+        // Subtle connection status banner during active gameplay
+        if (connectionStateRef.current === 'RECONNECTING' || connectionStateRef.current === 'DISCONNECTED') {
+          ctx.save();
+          const isReconnecting = connectionStateRef.current === 'RECONNECTING';
+          const bannerMsg = isReconnecting
+            ? 'Conexão perdida. Tentando reconectar...'
+            : 'Desconectado do servidor.';
+          const bannerWidth = 280;
+          const bannerHeight = 34;
+          const bx = (canvas.width - bannerWidth) / 2;
+          const by = 16;
+
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+          ctx.beginPath();
+          if (typeof ctx.roundRect === 'function') {
+            ctx.roundRect(bx, by, bannerWidth, bannerHeight, 8);
+          } else {
+            ctx.rect(bx, by, bannerWidth, bannerHeight);
+          }
+          ctx.fill();
+          ctx.strokeStyle = isReconnecting ? 'rgba(234, 179, 8, 0.7)' : 'rgba(239, 68, 68, 0.7)';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          ctx.fillStyle = isReconnecting ? '#facc15' : '#f87171';
+          ctx.font = 'bold 13px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(bannerMsg, canvas.width / 2, by + bannerHeight / 2);
+          ctx.restore();
+        }
       } catch (err) {
         console.error('Multiplayer canvas render error:', err);
       }
@@ -1083,7 +1218,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         socketRef.current = null;
       }
     };
-  }, [resize, playerName, enabledItems, sendInput]);
+  }, [resize, playerName, enabledItems, sendInput, setConnState]);
 
   const handlePointerInput = useCallback((clientX: number, clientY: number) => {
     if (isPausedRef.current || !canvasRef.current) return;

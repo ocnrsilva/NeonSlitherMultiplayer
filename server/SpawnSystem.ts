@@ -87,4 +87,8 @@ export class SpawnSystem {
       }
     }
   }
+
+  public destroy(): void {
+    // Idempotent cleanup method for lifecycle compliance
+  }
 }
