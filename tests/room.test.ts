@@ -3,6 +3,7 @@ import { Room } from '../server/Room';
 import { RoomManager } from '../server/RoomManager';
 import { runPhase6BTests } from './phase6b.test';
 import { runPhase6DTests } from './phase6d.test';
+import { runPhase6E1Tests } from './phase6e1.test';
 
 console.log('--- Iniciando Testes da Fase 2 (Room & RoomManager) ---');
 
@@ -644,6 +645,9 @@ async function runPhase3BTests() {
 
   // Executa os testes da Fase 6D
   await runPhase6DTests();
+
+  // Executa os testes da Fase 6E.1
+  await runPhase6E1Tests();
 
   process.exit(0);
 }

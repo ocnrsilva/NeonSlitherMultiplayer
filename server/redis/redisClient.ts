@@ -4,6 +4,90 @@ let redisInstance: Redis | null = null;
 let isRedisAvailable = false;
 const memoryStore = new Map<string, { value: string; expiresAt: number }>();
 
+export async function initRedis(timeoutMs = 5000): Promise<boolean> {
+  const isProd = process.env.NODE_ENV === 'production';
+  const redisUrl = process.env.REDIS_URL;
+
+  if (!redisUrl) {
+    if (isProd) {
+      console.error('[Redis] CRITICAL: REDIS_URL is mandatory in production. No silent fallback permitted.');
+      throw new Error('[Redis] REDIS_URL is mandatory in production. Refusing to start.');
+    }
+    console.warn('[Redis] No REDIS_URL configured; using in-memory store for development session caching.');
+    return true;
+  }
+
+  console.log('[Redis] Connecting to Redis server...');
+
+  if (!redisInstance) {
+    redisInstance = new Redis(redisUrl, {
+      maxRetriesPerRequest: 1,
+      connectTimeout: 2500,
+      lazyConnect: true,
+      retryStrategy(times) {
+        if (times > 5) {
+          isRedisAvailable = false;
+          return null; // Stop retrying after 5 attempts
+        }
+        return Math.min(times * 500, 2000);
+      },
+    });
+
+    redisInstance.on('connect', () => {
+      console.log('[Redis] Connected successfully to Redis server.');
+      isRedisAvailable = true;
+    });
+
+    redisInstance.on('error', (err) => {
+      isRedisAvailable = false;
+      if (process.env.NODE_ENV === 'production') {
+        console.error('[Redis] Connection error in production:', err.message);
+      } else {
+        console.warn('[Redis] Connection warning (dev memory fallback active):', err.message);
+      }
+    });
+  }
+
+  if (isRedisAvailable) {
+    return true;
+  }
+
+  try {
+    let timer: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`[Redis] Connection timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+
+    const connectPromise = (async () => {
+      if (redisInstance!.status === 'wait') {
+        await redisInstance!.connect();
+      }
+      const pong = await redisInstance!.ping();
+      if (pong === 'PONG') {
+        isRedisAvailable = true;
+        return true;
+      }
+      throw new Error(`[Redis] Unexpected ping response: ${pong}`);
+    })();
+
+    await Promise.race([connectPromise, timeoutPromise]);
+    if (timer) clearTimeout(timer);
+    return true;
+  } catch (err: unknown) {
+    isRedisAvailable = false;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (isProd) {
+      console.error(`[Redis] CRITICAL: Failed to connect to Redis in production: ${msg}`);
+      throw new Error(`[Redis] Failed to connect to Redis in production: ${msg}`);
+    } else {
+      console.warn(`[Redis] Connection warning (dev memory fallback active): ${msg}`);
+      return false;
+    }
+  }
+}
+
 export function getRedisClient(): Redis | null {
   if (redisInstance) return isRedisAvailable ? redisInstance : null;
 

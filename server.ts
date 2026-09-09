@@ -3,8 +3,8 @@ import http from 'http';
 import path from 'path';
 import { Server as SocketIOServer } from 'socket.io';
 import { GameServer } from './server/GameServer';
-import { isPrismaHealthy, disconnectPrisma } from './server/db/prisma';
-import { isRedisHealthy, disconnectRedis } from './server/redis/redisClient';
+import { isPrismaHealthy, disconnectPrisma, initPrisma } from './server/db/prisma';
+import { isRedisHealthy, disconnectRedis, initRedis } from './server/redis/redisClient';
 
 async function startServer() {
   const app = express();
@@ -51,6 +51,10 @@ async function startServer() {
     },
     transports: ['websocket', 'polling'],
   });
+
+  // Phase 6E.1: Explicitly await Redis & PostgreSQL readiness before starting GameServer and accepting connections
+  await initRedis(5000);
+  await initPrisma(5000);
 
   // Initialize GameServer
   const gameServer = new GameServer(io);
