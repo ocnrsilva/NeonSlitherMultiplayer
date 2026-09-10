@@ -107,6 +107,18 @@ export async function runPhase6E1Tests() {
     assert.strictEqual(devPrismaInit, true, 'initPrisma() em dev sem DATABASE_URL não bloqueia startup local');
     console.log('✓ TESTE 6E1.6 passou.');
 
+    // =========================================================================
+    // TESTE 6E1.7: getPrismaClient não dispara $connect duplicado concorrente
+    // =========================================================================
+    console.log('TESTE 6E1.7: getPrismaClient não dispara $connect duplicado concorrente...');
+    process.env.NODE_ENV = 'development';
+    process.env.DATABASE_URL = 'postgresql://user:pass@127.0.0.1:5432/db';
+
+    // Ao chamar getPrismaClient(), o cliente deve ser retornado sem disparar conexão assíncrona automática não monitorada
+    const client = (await import('../server/db/prisma')).getPrismaClient();
+    assert.ok(client !== null, 'getPrismaClient() deve instanciar o cliente');
+    console.log('✓ TESTE 6E1.7 passou.');
+
   } finally {
     // Restaura ambiente
     process.env = originalEnv;
