@@ -1,8 +1,6 @@
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/ocnrsilva/neon-slither:${APP_IMAGE_TAG:?APP_IMAGE_TAG is required}
     restart: unless-stopped
     environment:
       - NODE_ENV=production
@@ -16,7 +14,7 @@ services:
       - MAX_ROOMS=${MAX_ROOMS:-32}
       - GAME_SERVER_NAME=${GAME_SERVER_NAME:-neon-slither-01}
     ports:
-      - "${APP_PORT:-3010}:3010"
+      - "127.0.0.1:${APP_PORT:-3010}:3010"
     depends_on:
       postgres:
         condition: service_healthy
